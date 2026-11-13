@@ -17,6 +17,15 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY app ./app
 RUN uv sync --frozen --no-dev
 
+# Optional package for licensed Gurobi deployments; credentials are supplied
+# only at runtime. Keep this after uv sync so the frozen sync cannot remove it.
+ARG INSTALL_GUROBI=0
+RUN case "$INSTALL_GUROBI" in \
+      0) : ;; \
+      1) uv pip install --python /app/.venv/bin/python gurobipy==13.0.0 ;; \
+      *) echo "INSTALL_GUROBI must be 0 or 1" >&2; exit 1 ;; \
+    esac
+
 # ---- runtime: slim image, non-root ------------------------------------------
 FROM python:3.12-slim-bookworm AS runtime
 

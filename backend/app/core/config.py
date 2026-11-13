@@ -44,11 +44,16 @@ class Settings(BaseSettings):
     cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=list)
     enable_docs: bool | None = None
 
-    # Optimizer (OR-Tools CP-SAT, runs in-process off the event loop).
+    # Optimizer (runs in-process off the event loop).
+    optimizer_solver: Literal["gurobi", "cpsat"] = "cpsat"
     optimizer_time_limit_s: float = Field(default=20.0, gt=0, le=300)
     optimizer_workers: int = Field(default=4, ge=1, le=32)
     # Queued/running runs older than this are treated as orphaned (server restarted).
     optimizer_stale_after_s: int = Field(default=180, ge=30)
+
+    # Optional server-side AI intake; never expose this secret to the browser.
+    openai_api_key: SecretStr | None = None
+    openai_model: str = "gpt-4o-mini"
 
     # Injected by Railway at build/deploy time.
     railway_git_commit_sha: str | None = None

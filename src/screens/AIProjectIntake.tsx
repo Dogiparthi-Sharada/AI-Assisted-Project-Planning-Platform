@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router'
+import { useNavigate, useParams } from 'react-router'
+import { apiFetch, errorMessage } from '@/lib/api'
 import { useStepNav } from '@/lib/steps'
 
 const SAMPLE_TEXT = `Meeting Notes — Enterprise Data Platform Kickoff
@@ -30,12 +31,28 @@ OPEN ITEMS / UNKNOWNS
 export default function AIProjectIntake() {
   const nav = useStepNav()
   const navigate = useNavigate()
+  const { projectId } = useParams()
   const [analyzing, setAnalyzing] = useState(false)
   const [analyzed, setAnalyzed] = useState(false)
+  const [notes, setNotes] = useState('')
+  const [extracted, setExtracted] = useState(0)
 
-  function handleAnalyze() {
+  async function handleAnalyze() {
+    if (!projectId || !notes.trim()) return
+    if (!window.confirm('Your notes will be sent to the configured OpenAI service for analysis. Provider charges may apply. Each analysis adds a new set of scope items. Analyze these notes?')) return
     setAnalyzing(true)
-    setTimeout(() => { setAnalyzing(false); setAnalyzed(true) }, 1800)
+    setAnalyzed(false)
+    try {
+      const result = await apiFetch<{ items: unknown[] }>(`/api/v1/projects/${encodeURIComponent(projectId)}/intake/analyze`, {
+        method: 'POST', json: { text: notes.trim() },
+      })
+      setExtracted(result.items.length)
+      setAnalyzed(true)
+    } catch (error) {
+      window.alert(errorMessage(error))
+    } finally {
+      setAnalyzing(false)
+    }
   }
 
   return (
@@ -53,9 +70,14 @@ export default function AIProjectIntake() {
         {/* Main input */}
         <div>
           <div style={cardStyle}>
-            <div style={sectionLabel}>Brainstorm / Meeting Notes</div>
+            <div style={{ ...sectionLabel, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>Brainstorm / Meeting Notes</span>
+              <button type="button" onClick={() => { setNotes(SAMPLE_TEXT); setAnalyzed(false) }} style={{ ...secondaryBtn, fontSize: 11, padding: '4px 8px' }}>Load Example</button>
+            </div>
             <textarea
-              defaultValue={SAMPLE_TEXT}
+              value={notes}
+              onChange={event => { setNotes(event.target.value); setAnalyzed(false) }}
+              maxLength={20000}
               style={{
                 width: '100%',
                 minHeight: 320,
@@ -86,7 +108,7 @@ export default function AIProjectIntake() {
                 { icon: '💬', label: 'Transcript', sub: 'Meeting text' },
                 { icon: '🎙', label: 'Audio', sub: 'MP3, WAV, M4A' },
               ].map(u => (
-                <button key={u.label} style={{
+                <button key={u.label} onClick={() => window.alert('Document upload is not available yet. Please paste the text into the notes field.')} style={{
                   padding: '14px 10px',
                   border: '1px dashed #c8c8c8',
                   borderRadius: 6,
@@ -105,7 +127,7 @@ export default function AIProjectIntake() {
               ))}
             </div>
             <div style={{ marginTop: 10, fontSize: 11, color: '#999' }}>
-              Drag files here or click a tile to browse. Max 50 MB per file.
+              Document upload is not yet available. Paste text above to analyze it.
             </div>
           </div>
 
@@ -114,11 +136,11 @@ export default function AIProjectIntake() {
             <button onClick={() => navigate('/dashboard')} style={secondaryBtn}>← Back to Dashboard</button>
             <div className="flex items-center gap-10">
               {analyzed && (
-                <span style={{ fontSize: 13, color: '#4F7A4A', fontWeight: 500 }}>✓ Analysis complete — 6 sections extracted</span>
+                <span style={{ fontSize: 13, color: '#4F7A4A', fontWeight: 500 }}>✓ Analysis complete — {extracted} items extracted</span>
               )}
               <button
                 onClick={handleAnalyze}
-                disabled={analyzing}
+                disabled={analyzing || !notes.trim()}
                 style={{
                   padding: '10px 28px',
                   background: analyzing ? '#888' : '#722F37',
@@ -132,11 +154,9 @@ export default function AIProjectIntake() {
               >
                 {analyzing ? 'Analyzing…' : analyzed ? 'Re-Analyze' : 'Analyze Project'}
               </button>
-              {analyzed && (
-                <button onClick={() => nav('scope')} style={{ ...primaryBtn, background: '#4F7A4A' }}>
-                  Continue to Scope Review →
-                </button>
-              )}
+              <button onClick={() => nav('scope')} disabled={analyzing} style={{ ...primaryBtn, background: analyzed ? '#4F7A4A' : '#722F37' }}>
+                Continue to Scope Review →
+              </button>
             </div>
           </div>
         </div>
@@ -175,11 +195,9 @@ export default function AIProjectIntake() {
 
           <div style={cardStyle}>
             <div style={sectionLabel}>Previous Intakes</div>
-            {['ERP Migration (Jan 8)', 'Portal Redesign (Dec 22)', 'Warehouse Build (Dec 10)'].map(prev => (
-              <div key={prev} style={{ fontSize: 12, color: '#6B5254', padding: '6px 0', borderBottom: '1px solid #EFE5D2' }}>
-                {prev}
-              </div>
-            ))}
+            <div style={{ fontSize: 12, color: '#6B5254', padding: '6px 0', borderBottom: '1px solid #EFE5D2' }}>
+              Intake history is not available yet.
+            </div>
           </div>
         </div>
       </div>

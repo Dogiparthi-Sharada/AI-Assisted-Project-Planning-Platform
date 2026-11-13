@@ -1,7 +1,7 @@
 """In-process optimization worker (plan.md §0: no Redis yet).
 
 The API commits a `queued` run and then calls `OptimizationRunner.submit`.
-The run is solved on a worker thread (`asyncio.to_thread`, CP-SAT is
+The run is solved on a worker thread (`asyncio.to_thread`, the solver is
 CPU-bound) and its outcome written on a service connection, which bypasses
 RLS: this is a trusted system job, and `planned_assignments` /
 `recommendations` have no user write policies.
@@ -22,8 +22,9 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.core.config import Settings
+from app.optimization.baseline import baseline_plan
 from app.optimization.explain import build_report
-from app.optimization.model import PlanningInput, SnapshotError
+from app.optimization.model import PlanningInput, SnapshotError, SolveOutcome, build_resources
 from app.optimization.solver import SolveControl, SolveOptions, solve
 from app.repositories.optimization import OptimizationJobStore
 
@@ -32,8 +33,24 @@ logger = logging.getLogger("app.jobs.optimizer")
 RESTART_ERROR = "The server restarted during the run. Please run again."
 FAILED_ERROR = "The optimizer hit an unexpected error. Please run again."
 SNAPSHOT_ERROR = "The project's planning data couldn't be read. Please run again."
+GUROBI_UNAVAILABLE_ERROR = (
+    "Gurobi is unavailable or its license is not configured for this environment."
+)
 
 StoreFactory = Callable[[], AbstractAsyncContextManager[OptimizationJobStore]]
+
+
+def gurobi_failure(inp: PlanningInput, message: str) -> SolveOutcome:
+    """Preserve solver attribution even when the adapter cannot be loaded."""
+    return SolveOutcome(
+        status="failed",
+        solver="Gurobi",
+        solver_version="unavailable",
+        wall_seconds=0,
+        resources=build_resources(inp),
+        baseline=baseline_plan(inp),
+        message=message,
+    )
 
 
 def engine_store(engine: AsyncEngine) -> StoreFactory:
@@ -52,6 +69,7 @@ class OptimizationRunner:
             time_limit_s=settings.optimizer_time_limit_s, workers=settings.optimizer_workers
         )
         self._stale_after_s = settings.optimizer_stale_after_s
+        self._solver_name = settings.optimizer_solver
         # Strong references: the event loop only keeps weak ones to tasks.
         self._tasks: set[asyncio.Task[None]] = set()
         self._controls: dict[uuid.UUID, SolveControl] = {}
@@ -90,7 +108,20 @@ class OptimizationRunner:
                 "optimization started",
                 extra={**extra, "tasks": len(inp.tasks), "employees": len(inp.employees)},
             )
-            outcome = await asyncio.to_thread(solve, inp, self._options, control)
+            if self._solver_name == "gurobi":
+                try:
+                    from app.optimization.gurobi_solver import solve_gurobi
+                except ImportError:
+                    logger.error("Gurobi optimizer could not be imported")
+                    outcome = gurobi_failure(inp, GUROBI_UNAVAILABLE_ERROR)
+                else:
+                    try:
+                        outcome = await asyncio.to_thread(solve_gurobi, inp, self._options, control)
+                    except Exception:
+                        logger.error("Gurobi optimizer failed", extra=extra)
+                        outcome = gurobi_failure(inp, FAILED_ERROR)
+            else:
+                outcome = await asyncio.to_thread(solve, inp, self._options, control)
             report = build_report(inp, outcome)
             async with self._store() as store:
                 await store.finish(run_id, report)

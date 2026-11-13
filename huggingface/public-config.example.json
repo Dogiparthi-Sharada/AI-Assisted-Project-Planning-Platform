@@ -1,0 +1,5 @@
+{
+  "VITE_SUPABASE_URL": "https://your-project-ref.supabase.co",
+  "VITE_SUPABASE_PUBLISHABLE_KEY": "sb_publishable_replace_me",
+  "VITE_API_URL": "https://your-api-host.example.com"
+}

@@ -9,7 +9,7 @@ from app.core.errors import ConflictError, ForbiddenError, NotFoundError, Unproc
 from app.domain.optimization import OptimizationRun
 from app.jobs.optimizer import RESTART_ERROR
 from app.optimization.model import PlanningInput
-from app.repositories.optimization import ActiveRunExistsError
+from app.repositories.optimization import ActiveRunExistsError, MissingDurationsError
 
 router = APIRouter(tags=["optimization"])
 
@@ -62,10 +62,35 @@ async def create_run(
             raise ConflictError(ACTIVE_RUN_DETAIL)
         await runs.fail_run(active.id, RESTART_ERROR)  # orphaned by a restart
 
-    inp = await runs.load_input(project, datetime.now(UTC).date())
+    try:
+        inp = await runs.load_input(project, datetime.now(UTC).date())
+    except MissingDurationsError as exc:
+        raise UnprocessableError(
+            "Every work package and childless deliverable needs a positive duration before "
+            "running the optimizer.",
+            extra={"missing": ["workPackages"], "invalidDurations": exc.items},
+        ) from exc
     missing = missing_inputs(inp)
     if missing:
         raise UnprocessableError(_MISSING_DETAIL[tuple(missing)], extra={"missing": missing})
+
+    # An unknown rate is not free. If the run uses a budget, require actual rates
+    # instead of letting the solver impute an average (or zero) without notice.
+    has_budget = (
+        inp.constraints.budget_total_cents is not None or inp.constraints.labor_cap_cents is not None
+    )
+    if has_budget:
+        missing_rates = [
+            {"id": employee.id, "name": employee.name}
+            for employee in inp.employees
+            if employee.hourly_rate_cents is None
+        ]
+        if missing_rates:
+            raise UnprocessableError(
+                "Enter an hourly cost for each active team member before running "
+                "optimization with a total or labor budget.",
+                extra={"missing": ["hourlyRates"], "missingHourlyRates": missing_rates},
+            )
 
     try:
         run_id = await runs.create(project_id, inp.to_snapshot())

@@ -17,6 +17,7 @@ from app.optimization.model import PlanningInput
 from app.optimization.solver import solve
 from app.repositories.optimization import (
     ActiveRunExistsError,
+    MissingDurationsError,
     OptimizationJobStore,
     OptimizationRepository,
     ProjectContext,
@@ -176,7 +177,7 @@ async def test_load_input_builds_planning_input() -> None:
                     effort_hours=Decimal("30.0"),
                     owner_employee_id=e1,
                 ),
-                node(wp2, d1, 3, "1.1.2", duration_days=0),  # no duration: not a work package
+                node(wp2, d1, 3, "1.1.2", duration_days=4),
                 node(d2, root, 2, "1.2", duration_days=10),  # childless level 2: work package
             ]
         ),
@@ -200,7 +201,7 @@ async def test_load_input_builds_planning_input() -> None:
             ]
         ),
         Rows([{"employee_id": e1, "skill_id": sap, "proficiency": 4}]),
-        # dependency on the summary node d1 expands to its work package wp1
+        # dependency on the summary node d1 expands to both work packages
         Rows([{"predecessor_id": d1, "successor_id": d2, "type": "FS", "lag_days": 2}]),
         Rows([]),  # no constraint set -> project fallbacks
         Rows(
@@ -224,7 +225,7 @@ async def test_load_input_builds_planning_input() -> None:
         Rows([{"employee_id": e2, "week_start": date(2026, 10, 12), "hours": Decimal("16.0")}]),
     )
     inp = await OptimizationRepository(conn).load_input(ctx, date(2026, 10, 1))  # type: ignore[arg-type]
-    assert [t.code for t in inp.tasks] == ["1.1.1", "1.2"]
+    assert [t.code for t in inp.tasks] == ["1.1.1", "1.1.2", "1.2"]
     t1 = inp.tasks[0]
     assert (t1.effort_hours, t1.owner_id) == (30.0, str(e1))
     assert t1.skills[0].skill_name == "SAP"
@@ -232,18 +233,54 @@ async def test_load_input_builds_planning_input() -> None:
     assert inp.employees[0].skills == {str(sap): 4}
     assert inp.employees[1].is_contractor
     assert [(d.predecessor_id, d.successor_id, d.lag_days) for d in inp.dependencies] == [
-        (str(wp1), str(d2), 2)
+        (str(wp1), str(d2), 2),
+        (str(wp2), str(d2), 2),
     ]
     assert inp.start_date == date(2026, 10, 5)
     assert inp.constraints.budget_total_cents == 37_500_000
     assert inp.constraints.must_finish_by == date(2027, 1, 29)
     assert [m.name for m in inp.milestones] == ["Phase 1"]  # nodeless milestone is informational
-    assert inp.milestones[0].task_ids == (str(wp1),)
+    assert inp.milestones[0].task_ids == (str(wp1), str(wp2))
     assert inp.allocations[0].hours == 16.0
     assert "wbs_nodes_with_code" in conn.sql[0]
     assert "allocations.project_id != " in conn.sql[-1]
     # The snapshot survives a round trip.
     assert PlanningInput.from_snapshot(inp.to_snapshot()) == inp
+
+
+@pytest.mark.parametrize("invalid_duration", [None, 0])
+async def test_load_input_rejects_missing_work_durations(invalid_duration: int | None) -> None:
+    ctx = project_ctx()
+    root, summary, good, bad, empty = (uuid.uuid4() for _ in range(5))
+
+    def node(
+        node_id: uuid.UUID, parent: uuid.UUID | None, level: int, code: str, duration: int | None
+    ) -> dict[str, Any]:
+        return {
+            "id": node_id,
+            "parent_id": parent,
+            "level": level,
+            "name": f"Node {code}",
+            "duration_days": duration,
+            "effort_hours": None,
+            "owner_employee_id": None,
+            "code": code,
+        }
+
+    conn = Conn(Rows([
+        node(root, None, 1, "1", None),
+        node(summary, root, 2, "1.1", None),  # summary: duration is not required
+        node(good, summary, 3, "1.1.1", 2),
+        node(bad, summary, 3, "1.1.2", invalid_duration),
+        node(empty, root, 2, "1.2", invalid_duration),  # childless deliverable is work
+    ]))
+    with pytest.raises(MissingDurationsError) as exc:
+        await OptimizationRepository(conn).load_input(ctx, NOW.date())  # type: ignore[arg-type]
+    assert exc.value.items == [
+        {"id": str(bad), "code": "1.1.2", "name": "Node 1.1.2"},
+        {"id": str(empty), "code": "1.2", "name": "Node 1.2"},
+    ]
+    assert len(conn.sql) == 1
 
 
 async def test_load_input_with_constraint_set_and_no_data() -> None:

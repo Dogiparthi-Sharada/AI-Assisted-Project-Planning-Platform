@@ -1,8 +1,7 @@
 # Project Planning API (backend)
 
-FastAPI service for the AI-Assisted Project Planning Platform. It's a modular
-monolith: the planned optimizer (OR-Tools) and AI modules will be added as new
-`domain/`, `repositories/` and `api/v1/` modules.
+FastAPI service for the AI-Assisted Project Planning Platform. It is a modular
+monolith with an optimization worker and planning API.
 
 - **Database:** Supabase Postgres. The schema lives in `../supabase/migrations`
   and belongs to the DB team. This service has no migrations and never creates tables.
@@ -25,7 +24,7 @@ app/
                      pagination (keyset cursors)
   api/deps.py        repository providers (tests override these)
   api/v1/            routers: me, orgs, projects, dashboard, notifications, optimization, health
-  optimization/      pure CP-SAT optimizer (model, baseline, solver, explanations)
+  optimization/      planning model, CP-SAT / optional Gurobi solvers, explanations
   jobs/              in-process background worker for optimization runs
   domain/            pydantic schemas (camelCase JSON) + Postgres enum mirrors
   repositories/      SQLAlchemy Core queries against the existing tables (tables.py)
@@ -93,7 +92,7 @@ DB unreachable / pool exhausted / statement timeout → 503.
 
 ## Optimizer
 
-`app/optimization/` is a pure OR-Tools CP-SAT package (no DB or FastAPI imports):
+`app/optimization/` contains the planning model and solvers (no DB or FastAPI imports):
 `model.py` (input/output + the frozen `input_snapshot` format), `baseline.py`
 (forward-pass "before" plan), `solver.py` (model, status mapping, infeasibility
 explanation via assumption literals; the module docstring documents the formulation
@@ -106,6 +105,39 @@ into `input_snapshot` and commits. A background task then solves it in-process
 and before answering 409, runs stuck in queued/running for longer than
 `OPTIMIZER_STALE_AFTER_S` are marked failed, because a restart orphans them. Tuning:
 `OPTIMIZER_TIME_LIMIT_S`, `OPTIMIZER_WORKERS` (see `.env.example`).
+
+`OPTIMIZER_SOLVER` defaults to `cpsat`. For Gurobi, install the package, configure
+an appropriate Gurobi license for the target environment and use, and set
+`OPTIMIZER_SOLVER=gurobi`. The backend does **not** silently fall back to CP-SAT:
+a missing package or unusable license produces a failed optimization run.
+
+For local testing, after `uv sync` install the same pinned package used in CI,
+then use `--no-sync` so a frozen sync does not remove this optional package:
+
+```bash
+uv pip install --python .venv/bin/python gurobipy==13.0.0
+GUROBI_TEST_REQUIRED=1 uv run --no-sync pytest -q tests/test_gurobi_solver.py
+```
+
+The limited license bundled with the Python package is suitable only for small
+non-production tests and has model-size and usage restrictions. An integration
+test that skips because of a missing package or license does not prove Gurobi ran.
+Verify any larger model with a license appropriate to its intended environment.
+
+To include the package in the backend Docker image without changing the default
+CP-SAT image, set the non-secret build argument `INSTALL_GUROBI=1`:
+
+```bash
+docker build --build-arg INSTALL_GUROBI=1 -t project-api-gurobi ./backend
+```
+
+In Railway, set `INSTALL_GUROBI=1` as an API service build variable and rebuild
+the image. Configure `OPTIMIZER_SOLVER=gurobi` at runtime and provide a valid
+license securely at runtime—for example, via a securely mounted license file
+and `GRB_LICENSE_FILE` when supported by the hosting environment. Never pass
+license credentials through a build argument or commit them to the repository.
+Installing the package does not grant a production license. Test a real solve
+with your license and production-sized inputs before relying on the deployment.
 
 ## Deploy (Railway)
 
