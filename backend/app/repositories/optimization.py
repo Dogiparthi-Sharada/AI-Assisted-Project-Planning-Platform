@@ -51,6 +51,14 @@ class ActiveRunExistsError(Exception):
     """The one-active-run-per-project unique index rejected the insert."""
 
 
+class MissingDurationsError(Exception):
+    """Work items must have positive durations before the whole plan can be solved."""
+
+    def __init__(self, items: list[dict[str, str]]) -> None:
+        super().__init__("Some work items are missing a positive duration")
+        self.items = items
+
+
 @dataclass(frozen=True, slots=True)
 class ProjectContext:
     id: uuid.UUID
@@ -178,8 +186,9 @@ class OptimizationRepository:
     async def load_input(self, project: ProjectContext, today: date) -> PlanningInput:
         """Read the planning data the caller can see and freeze it into a model input.
 
-        Work packages are level-3 nodes and level-2 nodes without children,
-        with a positive duration. Dependencies and milestones on summary
+        Work packages are level-3 nodes and level-2 nodes without children.
+        Every work package must have a positive duration; silently ignoring one
+        would yield a misleading partial plan. Dependencies and milestones on summary
         nodes are expanded to the work packages underneath them.
         """
         pid = project.id
@@ -204,12 +213,12 @@ class OptimizationRepository:
         for n in nodes:
             if n.parent_id is not None:
                 children[n.parent_id].append(n.id)
-        work = [
-            n
-            for n in nodes
-            if (n.level == 3 or (n.level == 2 and not children.get(n.id)))
-            and (n.duration_days or 0) > 0
-        ]
+        work = [n for n in nodes if n.level == 3 or (n.level == 2 and not children.get(n.id))]
+        invalid = [n for n in work if n.duration_days is None or n.duration_days <= 0]
+        if invalid:
+            raise MissingDurationsError(
+                [{"id": str(n.id), "code": n.code, "name": n.name} for n in invalid]
+            )
         task_ids = {n.id for n in work}
 
         def leaves(node_id: uuid.UUID) -> list[uuid.UUID]:

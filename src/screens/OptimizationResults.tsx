@@ -83,7 +83,7 @@ export default function OptimizationResults() {
           <div style={{ fontSize: 13, color: '#7A6063', marginTop: 2 }}>
             {status !== null && FINISHED_OK.includes(status)
               ? 'Solver completed. Review recommended plan adjustments before finalizing.'
-              : 'Run the OR-Tools solver against your WBS, team and constraints.'}
+              : 'Run the optimizer against your WBS, team and constraints.'}
           </div>
         </div>
         <div className="opt-head-actions">
@@ -128,7 +128,7 @@ function SolverBadge({ run }: { run: OptimizationRun }) {
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '8px 14px', background: optimal ? '#DDE7D0' : '#F5E3C8', border: `1px solid ${optimal ? '#BFD1AE' : '#E6CFA6'}`, borderRadius: 6 }}>
       <span style={{ fontSize: 13, color: optimal ? '#4F7A4A' : '#a8691f', fontWeight: 600 }}>{run.status.toUpperCase()}</span>
       <span style={{ fontSize: 12, color: '#6B5254', fontFamily: 'DM Mono, monospace' }}>
-        {run.solver || 'OR-Tools'}
+        {run.solver || 'Optimizer'}
         {run.solveSeconds != null ? ` · ${run.solveSeconds.toFixed(1)}s` : ''}
       </span>
     </div>
@@ -140,7 +140,7 @@ function RunningView({ status }: { status: 'queued' | 'running' }) {
   return (
     <div className="opt-panel opt-center" role="status" aria-live="polite">
       <div className="opt-ring" aria-hidden="true" />
-      <div style={{ fontSize: 16, fontWeight: 600 }}>OR-Tools is solving your plan…</div>
+      <div style={{ fontSize: 16, fontWeight: 600 }}>The optimizer is solving your plan…</div>
       <div style={{ fontSize: 12, color: '#7A6063' }}>This usually takes under a minute. You can leave this page open.</div>
       <ol className="opt-steps">
         {SOLVE_STEPS.map((label, i) => (
@@ -257,7 +257,7 @@ function ResultsView({ run }: { run: OptimizationRun }) {
     <>
       {!optimal && (
         <div role="note" style={{ ...noteBox('#F5E3C8', '#E6CFA6'), padding: '8px 14px', fontSize: 12, color: '#a8691f', marginBottom: 16 }}>
-          Best plan found within the time limit — may not be the absolute optimum.
+          A feasible plan was found, but optimality has not been proven.
         </div>
       )}
 
@@ -265,7 +265,7 @@ function ResultsView({ run }: { run: OptimizationRun }) {
         <div style={cardStyle}>
           <div style={kpiLabel}>Solver Status</div>
           <div style={{ fontSize: 20, fontWeight: 700, color: optimal ? '#4F7A4A' : '#a8691f', marginBottom: 2, textTransform: 'capitalize' }}>{run.status}</div>
-          <div style={{ fontSize: 11, color: '#7A6063' }}>All hard constraints satisfied</div>
+          <div style={{ fontSize: 11, color: '#7A6063' }}>All modeled hard constraints satisfied</div>
         </div>
         {result.kpis.map((k) => (
           <div key={k.label} style={cardStyle}>

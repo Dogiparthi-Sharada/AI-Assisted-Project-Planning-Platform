@@ -44,6 +44,7 @@ jobs:
               - 'Dockerfile.web'
               - 'Caddyfile'
               - '.figma/make/site.json'
+              - 'huggingface/**'
             api:
               - 'backend/**'
             db:
@@ -65,6 +66,8 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - name: Offline hosting configuration checks
+        run: node --test huggingface/tests/build-static.test.mjs
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec tsc --noEmit -p .
       - run: pnpm build
@@ -83,6 +86,8 @@ jobs:
         working-directory: backend
     steps:
       - uses: actions/checkout@v4
+      - name: Offline planning checks
+        run: python -m unittest discover -s tests/offline -v
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
@@ -91,6 +96,26 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run mypy app
       - run: uv run pytest -q
+
+  gurobi:
+    name: Gurobi · solver integration
+    needs: changes
+    if: needs.changes.outputs.api == 'true' || needs.changes.outputs.ci == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      # Limited bundled license is for small CI test models only.
+      - name: Install Gurobi for integration tests
+        run: uv pip install --python .venv/bin/python gurobipy==13.0.0
+      - name: Run Gurobi integration tests
+        run: GUROBI_TEST_REQUIRED=1 uv run --no-sync pytest -q tests/test_gurobi_solver.py
 
   db:
     name: Database · migrations + RLS tests

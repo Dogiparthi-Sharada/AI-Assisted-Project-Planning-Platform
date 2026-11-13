@@ -1,55 +1,68 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { useParams } from 'react-router'
+import { apiFetch, errorMessage } from '@/lib/api'
 import { useStepNav } from '@/lib/steps'
 
-interface WBSItem {
-  code: string
+interface WBSNode {
+  id: string
+  parentId: string | null
   level: 1 | 2 | 3
+  sortOrder: number
   name: string
+  durationDays: number | null
+  effortHours: number | null
+  ownerEmployeeId: string | null
+}
+
+interface WBSItem extends WBSNode {
+  code: string
   duration?: string
   owner?: string
   expanded?: boolean
 }
 
-const INITIAL_WBS: WBSItem[] = [
-  { code: '1.0', level: 1, name: 'Enterprise Data Platform', expanded: true },
-  { code: '1.1', level: 2, name: 'Data Ingestion Layer', expanded: true },
-  { code: '1.1.1', level: 3, name: 'Salesforce connector development', duration: '3w', owner: 'M. Chen' },
-  { code: '1.1.2', level: 3, name: 'SAP integration setup', duration: '4w', owner: 'M. Chen' },
-  { code: '1.1.3', level: 3, name: 'Internal DB pipeline scripting (12 sources)', duration: '6w', owner: 'S. Kim' },
-  { code: '1.1.4', level: 3, name: 'Data quality validation framework', duration: '2w', owner: 'S. Kim' },
-  { code: '1.2', level: 2, name: 'Data Warehouse & ETL', expanded: true },
-  { code: '1.2.1', level: 3, name: 'Schema design and data modeling', duration: '3w', owner: 'S. Kim' },
-  { code: '1.2.2', level: 3, name: 'ETL pipeline development', duration: '5w', owner: 'M. Chen' },
-  { code: '1.2.3', level: 3, name: 'Performance tuning and indexing', duration: '2w', owner: 'S. Kim' },
-  { code: '1.3', level: 2, name: 'Dashboard & Reporting Portal', expanded: true },
-  { code: '1.3.1', level: 3, name: 'BI tool configuration and setup', duration: '2w', owner: 'T. Rivera' },
-  { code: '1.3.2', level: 3, name: 'Standard report library (40 reports)', duration: '4w', owner: 'T. Rivera' },
-  { code: '1.3.3', level: 3, name: 'Self-service analytics layer', duration: '3w', owner: 'T. Rivera' },
-  { code: '1.4', level: 2, name: 'Security & Compliance', expanded: true },
-  { code: '1.4.1', level: 3, name: 'RBAC implementation', duration: '2w', owner: 'S. Kim' },
-  { code: '1.4.2', level: 3, name: 'Audit logging system', duration: '1w', owner: 'M. Chen' },
-  { code: '1.4.3', level: 3, name: 'SOC 2 / GDPR compliance review', duration: '3w', owner: 'External' },
-  { code: '1.5', level: 2, name: 'Training & Rollout', expanded: false },
-  { code: '1.5.1', level: 3, name: 'End-user training materials', duration: '2w', owner: 'J. Doe' },
-  { code: '1.5.2', level: 3, name: 'Phased rollout (300 users)', duration: '3w', owner: 'J. Doe' },
-]
-
-const AI_ISSUES = [
-  { type: 'missing', text: 'Disaster recovery / backup procedures not represented in WBS' },
-  { type: 'missing', text: '1.4 Security section missing penetration testing work package' },
-  { type: 'duplicate', text: '1.1.4 (data quality) may overlap with 1.2.3 (performance tuning) — verify scope boundary' },
-  { type: 'warning', text: 'WBS code 1.3 has no testing or UAT work package before release' },
-]
+function renderTree(nodes: WBSNode[], previous: WBSItem[]): WBSItem[] {
+  const result: WBSItem[] = []
+  const children = (parentId: string | null) => nodes.filter(node => node.parentId === parentId)
+    .sort((a, b) => a.sortOrder - b.sortOrder)
+  const walk = (parentId: string | null, prefix: string) => {
+    children(parentId).forEach((node, index) => {
+      const code = node.level === 1 ? '1' : node.level === 2 ? `1.${index + 1}` : `${prefix}.${index + 1}`
+      result.push({ ...node, code, duration: node.durationDays == null ? '—' : `${node.durationDays}d`,
+        owner: node.ownerEmployeeId ? 'Assigned' : 'Unassigned',
+        expanded: previous.find(item => item.id === node.id)?.expanded ?? true })
+      walk(node.id, code)
+    })
+  }
+  walk(null, '')
+  return result
+}
 
 export default function WBSBuilder() {
   const nav = useStepNav()
-  const [wbs, setWbs] = useState(INITIAL_WBS)
-  const [selectedCode, setSelectedCode] = useState('1.1')
+  const { projectId } = useParams()
+  const path = `/api/v1/projects/${encodeURIComponent(projectId ?? '')}/wbs/nodes`
+  const query = useQuery({ queryKey: ['projects', projectId, 'wbs', 'nodes'],
+    queryFn: ({ signal }) => apiFetch<WBSNode[]>(path, { signal }), enabled: !!projectId })
+  const [wbs, setWbs] = useState<WBSItem[]>([])
+  const [selectedCode, setSelectedCode] = useState('')
   const [draggedCode, setDraggedCode] = useState<string | null>(null)
   const [dropTarget, setDropTarget] = useState<string | null>(null)
-  const [validating, setValidating] = useState(false)
-  const [lastValidated, setLastValidated] = useState('Validated just now')
+  const [busy, setBusy] = useState(false)
+  const [actionError, setActionError] = useState('')
   const [view, setView] = useState<'chart' | 'list'>('chart')
+
+  useEffect(() => { setWbs([]); setSelectedCode(''); setActionError('') }, [projectId])
+  useEffect(() => { if (query.data) setWbs(prev => renderTree(query.data, prev)) }, [query.data])
+
+  async function change(action: () => Promise<void>) {
+    if (busy || !projectId) return
+    setBusy(true)
+    setActionError('')
+    try { await action() } catch (error) { setActionError(errorMessage(error)) }
+    finally { await query.refetch(); setBusy(false) }
+  }
 
   function toggleExpand(code: string) {
     setWbs(prev => prev.map(i => i.code === code ? { ...i, expanded: !i.expanded } : i))
@@ -59,114 +72,99 @@ export default function WBSBuilder() {
     if (item.level === 1) return true
     const project = wbs.find(i => i.level === 1)
     if (item.level === 2) return !!project?.expanded
-    if (item.level === 3) {
-      const parentCode = item.code.split('.').slice(0, 2).join('.')
-      const parent = wbs.find(i => i.code === parentCode)
-      return !!project?.expanded && !!parent?.expanded
+    const parentCode = item.code.split('.').slice(0, 2).join('.')
+    return !!project?.expanded && !!wbs.find(i => i.code === parentCode)?.expanded
+  }
+
+  function askItem(existing?: WBSItem): { name: string; durationDays: number | null; effortHours: number | null } | null {
+    const input = window.prompt('Name', existing?.name ?? '')
+    if (input === null) return null
+    const name = input.trim()
+    if (!name || name.length > 300) { setActionError('Enter a name between 1 and 300 characters.'); return null }
+    const days = window.prompt('Duration in working days (optional; required to optimize)', existing?.durationDays?.toString() ?? '')
+    if (days === null) return null
+    const durationDays = days.trim() === '' ? null : Number(days)
+    if (durationDays !== null && (!Number.isInteger(durationDays) || durationDays < 1 || durationDays > 3650)) {
+      setActionError('Duration must be a whole number from 1 to 3650 days.'); return null
     }
-    return true
+    const hours = window.prompt('Effort in hours (optional)', existing?.effortHours?.toString() ?? '')
+    if (hours === null) return null
+    const effortHours = hours.trim() === '' ? null : Number(hours)
+    if (effortHours !== null && (!Number.isFinite(effortHours) || effortHours <= 0 || effortHours > 9999999.9 || Math.abs(Math.round(effortHours * 10) - effortHours * 10) > 1e-7)) {
+      setActionError('Effort must be a positive number with at most one decimal place.'); return null
+    }
+    return { name, durationDays, effortHours }
   }
 
   function addDeliverable() {
-    setWbs(prev => {
-      const deliverableCount = prev.filter(item => item.level === 2).length
-      return [
-        ...prev,
-        {
-          code: `1.${deliverableCount + 1}`,
-          level: 2,
-          name: 'New deliverable',
-          expanded: true,
-        },
-      ]
-    })
-  }
-
-  function addWorkPackage() {
-    setWbs(prev => {
-      const selected = prev.find(item => item.code === selectedCode)
-      const parentCode = selected?.level === 2
-        ? selected.code
-        : selected?.level === 3
-          ? selected.code.split('.').slice(0, 2).join('.')
-          : prev.find(item => item.level === 2)?.code
-
-      if (!parentCode) return prev
-
-      const childCount = prev.filter(item => item.level === 3 && item.code.startsWith(`${parentCode}.`)).length
-      const next = [...prev]
-      const lastChildIndex = next.reduce(
-        (found, item, index) => item.code.startsWith(`${parentCode}.`) ? index : found,
-        -1,
-      )
-      const parentIndex = next.findIndex(item => item.code === parentCode)
-      next.splice(lastChildIndex >= 0 ? lastChildIndex + 1 : parentIndex + 1, 0, {
-        code: `${parentCode}.${childCount + 1}`,
-        level: 3,
-        name: 'New work package',
-        duration: '—',
-        owner: 'Unassigned',
-      })
-      return next.map(item => item.code === parentCode ? { ...item, expanded: true } : item)
-    })
-  }
-
-  function validateWbs() {
-    setValidating(true)
-    window.setTimeout(() => {
-      setValidating(false)
-      setLastValidated('Validated just now')
-    }, 650)
-  }
-
-  function normalizeCodes(items: WBSItem[]) {
-    let deliverable = 0
-    let workPackage = 0
-    return items.map(item => {
-      if (item.level === 1) return { ...item, code: '1.0' }
-      if (item.level === 2) {
-        deliverable += 1
-        workPackage = 0
-        return { ...item, code: `1.${deliverable}` }
+    const values = askItem()
+    if (!values) return
+    void change(async () => {
+      let root = wbs.find(item => item.level === 1)
+      if (!root) {
+        const project = await apiFetch<{ name: string }>(`/api/v1/projects/${encodeURIComponent(projectId!)}`)
+        const created = await apiFetch<WBSNode>(path, { method: 'POST', json: { name: project.name, level: 1, parentId: null, sortOrder: 0 } })
+        root = { ...created, code: '1' }
       }
-      workPackage += 1
-      return { ...item, code: `1.${deliverable}.${workPackage}` }
+      const siblings = wbs.filter(item => item.parentId === root!.id)
+      await apiFetch(path, { method: 'POST', json: { ...values, level: 2, parentId: root.id,
+        sortOrder: siblings.length ? Math.max(...siblings.map(item => item.sortOrder)) + 1 : 0 } })
     })
   }
+
+  function addWorkPackage(parent?: WBSItem) {
+    const selected = parent ?? wbs.find(item => item.code === selectedCode)
+    const deliverable = selected?.level === 2 ? selected : selected?.level === 3
+      ? wbs.find(item => item.id === selected.parentId) : wbs.find(item => item.level === 2)
+    if (!deliverable) { setActionError('Add a deliverable first, then select it to add a work package.'); return }
+    const values = askItem()
+    if (!values) return
+    void change(async () => {
+      const siblings = wbs.filter(item => item.parentId === deliverable.id)
+      await apiFetch(path, { method: 'POST', json: { ...values, level: 3, parentId: deliverable.id,
+        sortOrder: siblings.length ? Math.max(...siblings.map(item => item.sortOrder)) + 1 : 0 } })
+    })
+  }
+
+  function editItem(item: WBSItem) {
+    const values = askItem(item)
+    if (!values) return
+    void change(async () => { await apiFetch(`${path}/${encodeURIComponent(item.id)}`, { method: 'PATCH', json: values }) })
+  }
+
+  function deleteItem(item: WBSItem) {
+    if (!window.confirm(`Delete "${item.name}" and any items beneath it? Dependencies and related data for deleted items will also be removed.`)) return
+    void change(async () => {
+      await apiFetch(`${path}/${encodeURIComponent(item.id)}`, { method: 'DELETE' })
+      setSelectedCode('')
+    })
+  }
+
+  function validateWbs() { setActionError('AI validation is not available yet.') }
 
   function moveItem(sourceCode: string, targetCode: string) {
-    if (sourceCode === targetCode) return
-    setWbs(prev => {
-      const source = prev.find(item => item.code === sourceCode)
-      const target = prev.find(item => item.code === targetCode)
-      if (!source || !target || source.level !== target.level || source.level === 1) return prev
-
-      const sourceParent = source.code.split('.').slice(0, -1).join('.')
-      const targetParent = target.code.split('.').slice(0, -1).join('.')
-      if (sourceParent !== targetParent) return prev
-
-      const sourceBlock = prev.filter(item => item.code === sourceCode || item.code.startsWith(`${sourceCode}.`))
-      const remaining = prev.filter(item => !sourceBlock.includes(item))
-      const targetIndex = remaining.findIndex(item => item.code === targetCode)
-      const reordered = [...remaining]
-      reordered.splice(targetIndex, 0, ...sourceBlock)
-      return normalizeCodes(reordered)
+    const source = wbs.find(item => item.code === sourceCode)
+    const target = wbs.find(item => item.code === targetCode)
+    if (!source || !target || source.id === target.id || source.level === 1 || source.parentId !== target.parentId) return
+    const siblings = wbs.filter(item => item.parentId === source.parentId)
+    const reordered = siblings.filter(item => item.id !== source.id)
+    reordered.splice(reordered.findIndex(item => item.id === target.id), 0, source)
+    void change(async () => {
+      for (let i = 0; i < reordered.length; i++) {
+        await apiFetch(`${path}/${encodeURIComponent(reordered[i].id)}`, { method: 'PATCH', json: { sortOrder: i } })
+      }
+      setSelectedCode('')
     })
   }
 
-  /** Keyboard alternative to dragging: Alt+Arrow moves an item within its parent. */
   function onRowKeyDown(event: React.KeyboardEvent, item: WBSItem) {
     if (!event.altKey || item.level === 1 || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return
     event.preventDefault()
-    const parent = item.code.split('.').slice(0, -1).join('.')
-    const siblings = wbs.filter(i => i.level === item.level && i.code.split('.').slice(0, -1).join('.') === parent)
-    const index = siblings.findIndex(i => i.code === item.code)
+    const siblings = wbs.filter(i => i.parentId === item.parentId)
+    const index = siblings.findIndex(i => i.id === item.id)
     if (event.key === 'ArrowUp' && index > 0) moveItem(item.code, siblings[index - 1].code)
-    if (event.key === 'ArrowDown' && index < siblings.length - 1) moveItem(siblings[index + 1].code, item.code)
+    if (event.key === 'ArrowDown' && index < siblings.length - 1) moveItem(item.code, siblings[index + 1].code)
   }
-
-  const issueColor: Record<string, string> = { missing: '#F5E3C8', duplicate: '#F5E3C8', warning: '#F3D9D5' }
-  const issueTag: Record<string, string> = { missing: '#a8691f', duplicate: '#a8691f', warning: '#A83A4A' }
 
   return (
     <div style={{ padding: '32px 36px' }}>
@@ -176,7 +174,7 @@ export default function WBSBuilder() {
         <div>
           <div style={{ fontSize: 22, fontWeight: 700 }}>WBS Builder</div>
           <div style={{ fontSize: 13, color: '#7A6063', marginTop: 2 }}>
-            Review and refine the hierarchical Work Breakdown Structure. AI has pre-populated based on scope.
+            Review and refine the hierarchical Work Breakdown Structure.
           </div>
         </div>
         <div className="flex gap-8">
@@ -187,23 +185,27 @@ export default function WBSBuilder() {
               </button>
             ))}
           </div>
-          <button onClick={addDeliverable} style={secondaryBtn}>+ Add Deliverable</button>
-          <button onClick={addWorkPackage} style={secondaryBtn}>+ Add Work Package</button>
-          <button onClick={validateWbs} disabled={validating} style={primaryBtn}>
-            {validating ? 'Validating…' : 'AI Validate'}
+          <button onClick={addDeliverable} disabled={busy || query.isLoading || query.isError} style={secondaryBtn}>+ Add Deliverable</button>
+          <button onClick={() => addWorkPackage()} disabled={busy || query.isLoading || query.isError} style={secondaryBtn}>+ Add Work Package</button>
+          <button onClick={validateWbs} style={primaryBtn}>
+            AI Validate
           </button>
         </div>
       </div>
 
+      {query.isLoading && <div role="status">Loading WBS…</div>}
+      {query.isError && <div role="alert">Could not load WBS: {errorMessage(query.error)} <button onClick={() => void query.refetch()} style={secondaryBtn}>Retry</button></div>}
+      {actionError && <div role="alert" style={{ color: '#A83A4A', marginBottom: 12 }}>{actionError}</div>}
+      {busy && <div role="status">Saving changes…</div>}
       <div className="grid" style={{ gridTemplateColumns: '1fr 280px', gap: 20 }}>
         {view === 'chart' && (
           <div style={{ ...cardStyle, overflow: 'auto', minWidth: 0 }}>
-            <OrgChart wbs={wbs} selectedCode={selectedCode} onSelect={setSelectedCode} onToggle={toggleExpand} />
+            {wbs.length > 0 ? <OrgChart wbs={wbs} selectedCode={selectedCode} onSelect={setSelectedCode} onToggle={toggleExpand} /> : <div>{query.isLoading ? 'Loading WBS…' : 'No items yet. Add a deliverable to get started.'}</div>}
           </div>
         )}
         {/* WBS tree */}
         <div style={{ ...cardStyle, display: view === 'list' ? 'block' : 'none' }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: '#7A6063', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 14, paddingBottom: 8, borderBottom: '1px solid #EFE5D2', display: 'grid', gridTemplateColumns: '120px 1fr 80px 100px 80px', gap: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: '#7A6063', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 14, paddingBottom: 8, borderBottom: '1px solid #EFE5D2', display: 'grid', gridTemplateColumns: '120px 1fr 80px 100px 150px', gap: 10 }}>
             <span>WBS Code</span>
             <span>Name</span>
             <span>Duration</span>
@@ -213,7 +215,7 @@ export default function WBSBuilder() {
           {wbs.filter(isVisible).map(item => (
             <div
               key={item.code}
-              draggable={item.level > 1}
+              draggable={item.level > 1 && !busy}
               onDragStart={(event) => {
                 setDraggedCode(item.code)
                 event.dataTransfer.effectAllowed = 'move'
@@ -239,7 +241,7 @@ export default function WBSBuilder() {
               aria-keyshortcuts={item.level > 1 ? 'Alt+ArrowUp Alt+ArrowDown' : undefined}
               style={{
                 display: 'grid',
-                gridTemplateColumns: '120px 1fr 80px 100px 80px',
+                gridTemplateColumns: '120px 1fr 80px 100px 150px',
                 gap: 10,
                 alignItems: 'center',
                 padding: '7px 0',
@@ -284,10 +286,11 @@ export default function WBSBuilder() {
               <span style={{ fontFamily: 'DM Mono, monospace', fontSize: 12, color: '#7A6063' }}>{item.duration || '—'}</span>
               <span style={{ fontSize: 12, color: '#6B5254' }}>{item.owner || '—'}</span>
               <div className="flex gap-4">
-                <button style={{ fontSize: 11, color: '#6B5254', border: '1px solid #e0e0e0', borderRadius: 3, padding: '2px 7px', background: '#FAF5EB', cursor: 'pointer' }}>Edit</button>
+                <button onClick={(event) => { event.stopPropagation(); editItem(item) }} disabled={busy} style={{ fontSize: 11, color: '#6B5254', border: '1px solid #e0e0e0', borderRadius: 3, padding: '2px 7px', background: '#FAF5EB', cursor: 'pointer' }}>Edit</button>
                 {item.level < 3 && (
-                  <button style={{ fontSize: 11, color: '#6B5254', border: '1px solid #e0e0e0', borderRadius: 3, padding: '2px 7px', background: '#FAF5EB', cursor: 'pointer' }}>+ Sub</button>
+                  <button onClick={(event) => { event.stopPropagation(); item.level === 1 ? addDeliverable() : addWorkPackage(item) }} disabled={busy} style={{ fontSize: 11, color: '#6B5254', border: '1px solid #e0e0e0', borderRadius: 3, padding: '2px 7px', background: '#FAF5EB', cursor: 'pointer' }}>+ Sub</button>
                 )}
+                <button onClick={(event) => { event.stopPropagation(); deleteItem(item) }} disabled={busy} style={{ fontSize: 11, color: '#A83A4A', border: '1px solid #f0d4d4', borderRadius: 3, padding: '2px 7px', background: '#F3D9D5', cursor: 'pointer' }}>Delete</button>
               </div>
             </div>
           ))}
@@ -298,21 +301,11 @@ export default function WBSBuilder() {
           <div style={cardStyle}>
             <div className="flex items-center justify-between" style={{ marginBottom: 12 }}>
               <div style={{ fontSize: 13, fontWeight: 600 }}>AI Validation</div>
-              <span style={{ fontSize: 10, color: '#7A6063' }}>{lastValidated}</span>
+              <span style={{ fontSize: 10, color: '#7A6063' }}>Not available</span>
             </div>
-            <div style={{ fontSize: 12, color: '#4F7A4A', fontWeight: 500, marginBottom: 10 }}>WBS structure is valid (3 levels)</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {AI_ISSUES.map((issue, i) => (
-                <div key={i} style={{ padding: '8px 10px', background: issueColor[issue.type] || '#F3EADB', borderRadius: 4, borderLeft: `3px solid ${issueTag[issue.type]}` }}>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: issueTag[issue.type], textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 3 }}>
-                    {issue.type}
-                  </div>
-                  <div style={{ fontSize: 12, color: '#4A2B2F', lineHeight: 1.5 }}>{issue.text}</div>
-                </div>
-              ))}
-            </div>
-            <button onClick={validateWbs} disabled={validating} style={{ ...secondaryBtn, width: '100%', marginTop: 12, fontSize: 12 }}>
-              {validating ? 'Validating WBS…' : 'AI Validate'}
+            <div style={{ fontSize: 12, color: '#7A6063', marginBottom: 10 }}>AI validation is not available yet.</div>
+            <button onClick={validateWbs} style={{ ...secondaryBtn, width: '100%', marginTop: 12, fontSize: 12 }}>
+              AI Validate
             </button>
           </div>
 
@@ -320,12 +313,12 @@ export default function WBSBuilder() {
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>WBS Summary</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: '#6B5254' }}>
               {[
-                ['Level 1 (Project)', '1'],
-                ['Level 2 (Deliverables)', '5'],
-                ['Level 3 (Work Packages)', '14'],
-                ['Total Work Packages', '14'],
-                ['Unassigned Packages', '2'],
-                ['Estimated Weeks', '38w total'],
+                ['Level 1 (Project)', String(wbs.filter(i => i.level === 1).length)],
+                ['Level 2 (Deliverables)', String(wbs.filter(i => i.level === 2).length)],
+                ['Level 3 (Work Packages)', String(wbs.filter(i => i.level === 3).length)],
+                ['Total Work Packages', String(wbs.filter(i => i.level === 3 || (i.level === 2 && !wbs.some(child => child.parentId === i.id))).length)],
+                ['Unassigned Packages', String(wbs.filter(i => (i.level === 3 || (i.level === 2 && !wbs.some(child => child.parentId === i.id))) && !i.ownerEmployeeId).length)],
+                ['Total package duration', `${wbs.filter(i => i.level === 3 || (i.level === 2 && !wbs.some(child => child.parentId === i.id))).reduce((sum, item) => sum + (item.durationDays ?? 0), 0)} days`],
               ].map(([k, v]) => (
                 <div key={k} className="flex justify-between" style={{ paddingBottom: 5, borderBottom: '1px solid #EFE5D2' }}>
                   <span>{k}</span>

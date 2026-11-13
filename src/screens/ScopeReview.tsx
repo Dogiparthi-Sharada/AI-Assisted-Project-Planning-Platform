@@ -1,42 +1,19 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useParams } from 'react-router'
+import { apiFetch, errorMessage } from '@/lib/api'
 import { useStepNav } from '@/lib/steps'
 
 interface Item { id: string; text: string; accepted: boolean; removed: boolean }
 
-const INITIAL: Record<string, Item[]> = {
-  Objectives: [
-    { id: 'o1', text: 'Consolidate 7 legacy BI systems into a unified data platform', accepted: true, removed: false },
-    { id: 'o2', text: 'Enable real-time dashboards for all business units by Q3 2025', accepted: true, removed: false },
-    { id: 'o3', text: 'Reduce reporting cycle time from 3 days to 4 hours', accepted: false, removed: false },
-  ],
-  Requirements: [
-    { id: 'r1', text: 'Ingestion layer supporting Salesforce, SAP, and 12 internal databases', accepted: true, removed: false },
-    { id: 'r2', text: 'Sub-5-second query response for standard reports', accepted: false, removed: false },
-    { id: 'r3', text: 'Role-based access control (RBAC) with full audit logging', accepted: false, removed: false },
-    { id: 'r4', text: 'GDPR and SOC 2 Type II compliance required', accepted: false, removed: false },
-  ],
-  Deliverables: [
-    { id: 'd1', text: 'Data ingestion pipeline (Phase 1: Salesforce, SAP)', accepted: false, removed: false },
-    { id: 'd2', text: 'Unified data warehouse schema and ETL processes', accepted: false, removed: false },
-    { id: 'd3', text: 'Self-service dashboard portal for 500+ users', accepted: false, removed: false },
-    { id: 'd4', text: 'Security and compliance documentation package', accepted: false, removed: false },
-  ],
-  Constraints: [
-    { id: 'c1', text: 'Budget fixed at $375,000 — no contingency buffer approved', accepted: false, removed: false },
-    { id: 'c2', text: 'Target go-live: Q3 2025 (September 30)', accepted: false, removed: false },
-    { id: 'c3', text: 'Only 2 data engineers available for first 3 months', accepted: false, removed: false },
-  ],
-  Risks: [
-    { id: 'rk1', text: 'SAP integration timeline uncertain — vendor dependency may delay Phase 1', accepted: false, removed: false },
-    { id: 'rk2', text: 'Infrastructure costs may exceed budget if cloud spend spikes', accepted: false, removed: false },
-    { id: 'rk3', text: 'End-user adoption risk — 300 users need training with no plan yet', accepted: false, removed: false },
-  ],
-  'Missing Information': [
-    { id: 'm1', text: 'Security review process and timeline not initiated', accepted: false, removed: false },
-    { id: 'm2', text: 'Disaster recovery SLA not defined', accepted: false, removed: false },
-    { id: 'm3', text: 'User training and change management plan not scoped', accepted: false, removed: false },
-  ],
+type Category = 'objective' | 'requirement' | 'deliverable' | 'constraint' | 'risk' | 'missing_info'
+interface SavedItem { id: string; text: string; category: Category; status: 'pending' | 'accepted' | 'removed' }
+const SECTION_CATEGORIES: Record<string, Category> = {
+  Objectives: 'objective', Requirements: 'requirement', Deliverables: 'deliverable',
+  Constraints: 'constraint', Risks: 'risk', 'Missing Information': 'missing_info',
 }
+const emptySections = (): Record<string, Item[]> => Object.fromEntries(
+  Object.keys(SECTION_CATEGORIES).map(section => [section, []]),
+)
 
 const SECTION_COLOR: Record<string, string> = {
   Objectives: '#DDE7D0',
@@ -49,37 +26,56 @@ const SECTION_COLOR: Record<string, string> = {
 
 export default function ScopeReview() {
   const nav = useStepNav()
-  const [sections, setSections] = useState(INITIAL)
+  const { projectId } = useParams()
+  const [sections, setSections] = useState<Record<string, Item[]>>(emptySections)
+  const [loadError, setLoadError] = useState('')
+  const base = `/api/v1/projects/${encodeURIComponent(projectId ?? '')}/scope-items`
+
+  useEffect(() => {
+    if (!projectId) return
+    const controller = new AbortController()
+    setSections(emptySections())
+    apiFetch<SavedItem[]>(base, { signal: controller.signal }).then(items => {
+      const grouped = emptySections()
+      for (const item of items) {
+        const section = Object.keys(SECTION_CATEGORIES).find(key => SECTION_CATEGORIES[key] === item.category)
+        if (section) grouped[section].push({ id: item.id, text: item.text, accepted: item.status === 'accepted', removed: item.status === 'removed' })
+      }
+      setSections(grouped); setLoadError('')
+    }).catch(error => { if (!controller.signal.aborted) setLoadError(errorMessage(error)) })
+    return () => controller.abort()
+  }, [projectId, base])
   const [editing, setEditing] = useState<string | null>(null)
   const [editText, setEditText] = useState('')
 
-  function accept(section: string, id: string) {
-    setSections(prev => ({
-      ...prev,
-      [section]: prev[section].map(i => i.id === id ? { ...i, accepted: true } : i)
-    }))
+  async function update(section: string, id: string, patch: Record<string, string>): Promise<boolean> {
+    try {
+      const item = await apiFetch<SavedItem>(`${base}/${encodeURIComponent(id)}`, { method: 'PATCH', json: patch })
+      setSections(prev => ({ ...prev, [section]: prev[section].map(i => i.id === id ? { ...i, text: item.text, accepted: item.status === 'accepted', removed: item.status === 'removed' } : i) }))
+      return true
+    } catch (error) { window.alert(errorMessage(error)); return false }
   }
-  function remove(section: string, id: string) {
-    setSections(prev => ({
-      ...prev,
-      [section]: prev[section].map(i => i.id === id ? { ...i, removed: true } : i)
-    }))
-  }
+  function accept(section: string, id: string) { void update(section, id, { status: 'accepted' }) }
+  function remove(section: string, id: string) { void update(section, id, { status: 'removed' }) }
   function startEdit(id: string, text: string) { setEditing(id); setEditText(text) }
-  function saveEdit(section: string, id: string) {
-    setSections(prev => ({
-      ...prev,
-      [section]: prev[section].map(i => i.id === id ? { ...i, text: editText } : i)
-    }))
-    setEditing(null)
+  async function saveEdit(section: string, id: string) {
+    if (!editText.trim()) return
+    if (await update(section, id, { text: editText.trim() })) setEditing(null)
   }
-
-  const acceptAll = () => {
-    const updated: Record<string, Item[]> = {}
-    Object.entries(sections).forEach(([k, v]) => {
-      updated[k] = v.map(i => ({ ...i, accepted: i.removed ? i.accepted : true }))
-    })
-    setSections(updated)
+  async function addItem(section: string) {
+    const text = window.prompt(`Add ${section.toLowerCase()} item`)
+    if (!text?.trim()) return
+    try {
+      const item = await apiFetch<SavedItem>(base, { method: 'POST', json: { category: SECTION_CATEGORIES[section], text: text.trim() } })
+      setSections(prev => ({ ...prev, [section]: [...prev[section], { id: item.id, text: item.text, accepted: item.status === 'accepted', removed: item.status === 'removed' }] }))
+    } catch (error) { window.alert(errorMessage(error)) }
+  }
+  async function acceptAll() {
+    for (const [section, items] of Object.entries(sections)) {
+      for (const item of items) {
+        if (!item.removed && !item.accepted && !await update(section, item.id, { status: 'accepted' })) return
+      }
+    }
   }
 
   const totalAccepted = Object.values(sections).flat().filter(i => i.accepted && !i.removed).length
@@ -104,6 +100,7 @@ export default function ScopeReview() {
         </div>
       </div>
 
+      {loadError && <div role="alert" style={{ color: '#A83A4A', marginBottom: 12 }}>{loadError}</div>}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         {Object.entries(sections).map(([section, items]) => {
           const visible = items.filter(i => !i.removed)
@@ -117,7 +114,7 @@ export default function ScopeReview() {
                     {accepted}/{visible.length} accepted
                   </span>
                 </div>
-                <button style={{ fontSize: 11, color: '#7A6063', background: 'none', border: 'none', cursor: 'pointer' }}>+ Add item</button>
+                <button onClick={() => void addItem(section)} style={{ fontSize: 11, color: '#7A6063', background: 'none', border: 'none', cursor: 'pointer' }}>+ Add item</button>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {visible.map(item => (
@@ -164,7 +161,7 @@ export default function ScopeReview() {
                   </div>
                 ))}
                 {visible.length === 0 && (
-                  <div style={{ fontSize: 12, color: '#999', padding: '8px 10px', fontStyle: 'italic' }}>All items removed</div>
+                  <div style={{ fontSize: 12, color: '#999', padding: '8px 10px', fontStyle: 'italic' }}>No items yet</div>
                 )}
               </div>
             </div>

@@ -17,8 +17,13 @@ from app.core.security import CurrentPrincipal
 from app.domain.common import OrgRole, SolverStatus
 from app.domain.optimization import OptimizationRun
 from app.jobs.optimizer import RESTART_ERROR
-from app.optimization.model import Employee, PlanningInput, Task
-from app.repositories.optimization import ActiveRun, ActiveRunExistsError, ProjectContext
+from app.optimization.model import Constraints, Employee, PlanningInput, Task
+from app.repositories.optimization import (
+    ActiveRun,
+    ActiveRunExistsError,
+    MissingDurationsError,
+    ProjectContext,
+)
 from tests.conftest import Store, rls_violation
 
 Auth = Callable[[uuid.UUID], dict[str, str]]
@@ -29,6 +34,7 @@ class RunStore:
     runs: dict[uuid.UUID, dict[str, Any]] = field(default_factory=dict)
     inputs: dict[uuid.UUID, PlanningInput] = field(default_factory=dict)
     race: bool = False  # simulate a concurrent insert hitting the unique index
+    invalid_durations: list[dict[str, str]] = field(default_factory=list)
 
 
 class FakeRuns:
@@ -59,6 +65,8 @@ class FakeRuns:
         self.r.runs[run_id].update(status="failed", error=error)
 
     async def load_input(self, project: ProjectContext, today: date) -> PlanningInput:
+        if self.r.invalid_durations:
+            raise MissingDurationsError(self.r.invalid_durations)
         return self.r.inputs.get(
             project.id, PlanningInput(str(project.id), project.name, today, (), ())
         )
@@ -260,6 +268,74 @@ def test_create_run_422_lists_missing_inputs(
     assert body["detail"].endswith("before running the optimizer.")
     assert runner.submitted == []
     assert run_store.runs == {}
+
+
+def test_missing_duration_blocks_run_with_item_details(
+    opt_client: TestClient, store: Store, run_store: RunStore, runner: FakeRunner, auth: Auth
+) -> None:
+    user, _, pid = _project(opt_client, store, auth)
+    _ready(run_store, pid)  # another valid task and a team cannot make a partial plan acceptable
+    run_store.invalid_durations = [{"id": str(uuid.uuid4()), "code": "1.1.2", "name": "Build"}]
+    response = opt_client.post(_url(pid), headers=auth(user))
+    assert response.status_code == 422
+    assert response.json()["invalidDurations"] == run_store.invalid_durations
+    assert response.json()["missing"] == ["workPackages"]
+    assert "positive duration" in response.json()["detail"]
+    assert runner.submitted == []
+    assert run_store.runs == {}
+
+
+@pytest.mark.parametrize("budget_field", ["budget_total_cents", "labor_cap_cents"])
+def test_budget_requires_rates_for_every_active_team_member(
+    opt_client: TestClient,
+    store: Store,
+    run_store: RunStore,
+    runner: FakeRunner,
+    auth: Auth,
+    budget_field: str,
+) -> None:
+    user, _, pid = _project(opt_client, store, auth)
+    run_store.inputs[uuid.UUID(pid)] = PlanningInput(
+        pid,
+        "CRM",
+        date(2026, 10, 5),
+        (Task("t1", "1.1", "Design", 5),),
+        (Employee("e1", "Known", hourly_rate_cents=10000), Employee("e2", "Missing")),
+        constraints=Constraints(**{budget_field: 100000}),  # type: ignore[arg-type]
+    )
+    response = opt_client.post(_url(pid), headers=auth(user))
+    assert response.status_code == 422
+    assert response.json()["missingHourlyRates"] == [{"id": "e2", "name": "Missing"}]
+    assert response.json()["missing"] == ["hourlyRates"]
+    assert runner.submitted == []
+    assert run_store.runs == {}
+
+
+def test_known_zero_rate_counts_as_explicit_for_budget(
+    opt_client: TestClient, store: Store, run_store: RunStore, runner: FakeRunner, auth: Auth
+) -> None:
+    user, _, pid = _project(opt_client, store, auth)
+    run_store.inputs[uuid.UUID(pid)] = PlanningInput(
+        pid,
+        "CRM",
+        date(2026, 10, 5),
+        (Task("t1", "1.1", "Design", 5),),
+        (Employee("e1", "Zero cost", hourly_rate_cents=0),),
+        constraints=Constraints(budget_total_cents=100000),
+    )
+    response = opt_client.post(_url(pid), headers=auth(user))
+    assert response.status_code == 202, response.text
+    assert len(runner.submitted) == 1
+
+
+def test_missing_rate_allowed_without_budget(
+    opt_client: TestClient, store: Store, run_store: RunStore, runner: FakeRunner, auth: Auth
+) -> None:
+    user, _, pid = _project(opt_client, store, auth)
+    _ready(run_store, pid)
+    response = opt_client.post(_url(pid), headers=auth(user))
+    assert response.status_code == 202, response.text
+    assert len(runner.submitted) == 1
 
 
 def test_create_run_permissions(
