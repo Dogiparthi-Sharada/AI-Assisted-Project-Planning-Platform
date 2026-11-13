@@ -51,6 +51,28 @@ Without `DATABASE_URL`/`SUPABASE_URL`, the app still starts in development.
 
 ## Test and lint
 
+These checks run offline with Python's standard library and do not require
+installed project packages. They verify planning helpers and an independently
+calculated example, but they do not execute Gurobi, OR-Tools, the API, or the
+database:
+
+```bash
+python -m unittest discover -s tests/offline -v
+```
+
+For pip-based setups, `requirements.txt` contains the locked production
+dependencies and `requirements-dev.txt` contains both production and development
+dependencies. Both are generated from `uv.lock`:
+
+```bash
+uv export --frozen --offline --no-dev --no-hashes --no-header -o requirements.txt
+uv export --frozen --offline --no-hashes --no-header -o requirements-dev.txt
+```
+
+After installing production requirements, optionally install
+`requirements-gurobi.txt` for the Gurobi adapter. Its separate pin matches the
+optional Docker build; installing it does not configure a Gurobi license.
+
 ```bash
 uv run pytest -q                       # tests
 uv run coverage run -m pytest -q && uv run coverage report
