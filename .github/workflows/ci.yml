@@ -44,6 +44,7 @@ jobs:
               - 'Dockerfile.web'
               - 'Caddyfile'
               - '.figma/make/site.json'
+              - 'huggingface/**'
             api:
               - 'backend/**'
             db:
@@ -65,6 +66,8 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - name: Offline hosting configuration checks
+        run: node --test huggingface/tests/build-static.test.mjs
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec tsc --noEmit -p .
       - run: pnpm build
@@ -83,6 +86,8 @@ jobs:
         working-directory: backend
     steps:
       - uses: actions/checkout@v4
+      - name: Offline planning checks
+        run: python -m unittest discover -s tests/offline -v
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
