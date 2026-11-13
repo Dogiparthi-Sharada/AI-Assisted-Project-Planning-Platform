@@ -1,0 +1,4 @@
+# Python backend and the optional Gurobi solver used for the demo.
+# The backend/ files pin versions and are generated from uv.lock where noted.
+-r backend/requirements.txt
+-r backend/requirements-gurobi.txt
